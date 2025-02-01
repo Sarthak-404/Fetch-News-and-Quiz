@@ -1,7 +1,6 @@
 import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from flask_caching import Cache
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
@@ -21,27 +20,17 @@ os.environ["USER_AGENT"] = os.getenv("USER_AGENT")
 app = Flask(__name__)
 CORS(app)
 
-# Configure Flask-Caching
-cache = Cache(app, config={'CACHE_TYPE': 'simple', 'CACHE_DEFAULT_TIMEOUT': 3600})
-
 @app.route("/", methods=["GET"])
 def home():
     return "Welcome to the Flask API!"
 
-# Load and store the news articles in cache
-@cache.cached(timeout=3600, key_prefix='news_data')
-def load_news():
-    loader = WebBaseLoader("https://www.financialexpress.com/")
-    docs = loader.load()
+loader = WebBaseLoader("https://www.financialexpress.com/")
+docs = loader.load()
 
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    final_documents = text_splitter.split_documents(docs)
-    vectors = FAISS.from_documents(final_documents, embeddings)
-
-    return vectors
-
-vectors = load_news()
+embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+final_documents = text_splitter.split_documents(docs)
+vectors = FAISS.from_documents(final_documents, embeddings)
 
 prompt = ChatPromptTemplate.from_template(
     """
@@ -52,14 +41,12 @@ prompt = ChatPromptTemplate.from_template(
         {context}
     """
 )
-
 llm = ChatGroq(groq_api_key=groq_api_key, model_name="Llama3-8b-8192")
 document_chain = create_stuff_documents_chain(llm, prompt)
 retriever = vectors.as_retriever()
 retrieval_chain = create_retrieval_chain(retriever, document_chain)
 
 @app.route('/news', methods=['GET'])
-@cache.cached(timeout=1800, key_prefix='financial_news')
 def get_financial_news():
     try:
         response = retrieval_chain.invoke({"input": "Give top 10 news about finance"})
@@ -70,15 +57,11 @@ def get_financial_news():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/quiz', methods=['GET'])
-@cache.cached(timeout=1800, key_prefix='quiz_data')
 def get_quiz():
     try:
-        # Fetch latest news from cache or API
-        news_summary = cache.get('financial_news')
-        if not news_summary:
-            response = retrieval_chain.invoke({"input": "Give top 10 news about finance"})
-            news_summary = response.get('answer', "No news found")
-            cache.set('financial_news', news_summary, timeout=1800)
+        # Fetch latest news first
+        response = retrieval_chain.invoke({"input": "Give top 10 news about finance"})
+        news_summary = response.get('answer', "No news found")
 
         # Create Quiz Prompt
         quiz_prompt = ChatPromptTemplate.from_template("""
